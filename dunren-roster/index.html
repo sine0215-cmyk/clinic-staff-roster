@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>敦仁診所四週排班系統</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header>
+    <h1>敦仁診所四週排班系統</h1>
+    <p>三院所｜週六早班優先試排｜四週變形工時｜Excel 匯出</p>
+  </header>
+  <main class="wrap">
+    <div class="card row">
+      <label class="field">院所<select id="siteFilter"></select></label>
+      <label class="field">第一期開始日<input id="periodStart" type="date"></label>
+      <label class="field">期數<select id="periodCount"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+      <label class="field">排班模式<select id="scheduleMode"><option value="sat-am-priority">週六早班優先（22人）</option><option value="demand">職位需求草案</option></select></label>
+      <button type="button" class="primary" onclick="DRApp.save()">儲存</button>
+      <button type="button" class="secondary" onclick="DRApp.exportJson()">匯出 JSON</button>
+      <label class="file secondary">載入 JSON<input hidden type="file" accept="application/json" onchange="DRApp.importJson(event)"></label>
+      <button type="button" class="amber" onclick="DRApp.exportExcel()">匯出 Excel</button>
+      <span id="saveState" class="ok"></span>
+    </div>
+    <div class="card"><div class="muted">目前期別</div><div id="periodChips" class="period-chips"></div></div>
+    <div class="card tabs">
+      <button type="button" data-page="summary" onclick="DRApp.showPage('summary')">總覽</button>
+      <button type="button" data-page="rules" onclick="DRApp.showPage('rules')">排班規則</button>
+      <button type="button" data-page="staff" onclick="DRApp.showPage('staff')">人員主檔</button>
+      <button type="button" data-page="positions" onclick="DRApp.showPage('positions')">職位需求</button>
+      <button type="button" data-page="leave" onclick="DRApp.showPage('leave')">預畫休</button>
+      <button type="button" data-page="matrix" onclick="DRApp.showPage('matrix')">期別班表</button>
+      <button type="button" data-page="draft" onclick="DRApp.showPage('draft')">排班明細</button>
+      <button type="button" data-page="compliance" onclick="DRApp.showPage('compliance')">工時檢核</button>
+    </div>
+    <section id="summary" class="page">
+      <div class="grid">
+        <div class="card"><h3>人員</h3><div class="kpi" id="staffKpi"></div></div>
+        <div class="card"><h3>班位</h3><div class="kpi" id="slotsKpi"></div></div>
+        <div class="card"><h3>缺額</h3><div class="kpi" id="gapsKpi"></div></div>
+        <div class="card"><h3>期別</h3><div class="kpi" id="activePeriodLabel" style="font-size:16px"></div></div>
+      </div>
+      <div class="card warning">預設 2026/08/30 起 2 期（115/08/30～115/10/24）。22 人核心池：四週休 1 週六、3 週六假早、週日例假、每日 1 節、≤160h。</div>
+      <div class="card row">
+        <button type="button" class="primary" onclick="DRApp.generateDraft()">產生排班草案</button>
+        <button type="button" class="secondary" onclick="DRApp.exportExcelCurrent()">匯出本期 Excel</button>
+      </div>
+    </section>
+    <section id="rules" class="page hidden"><div class="card"><h2>排班分類</h2><p><strong>核心池 22 人</strong>：13 護理＋9 正職櫃檯，納入週六早班優先試排。</p><p><strong>補位池</strong>：黃家慈（兼職）。</p><p><strong>專業池</strong>：營養師、藥師、衛教師另行排班。</p></div></section>
+    <section id="staff" class="page hidden"><div class="card"><input id="staffSearch" placeholder="搜尋姓名、職稱" oninput="DRApp.showPage('staff')"><table><thead><tr><th>編號</th><th>姓名</th><th>職稱</th><th>主要院所</th><th>主要職位</th><th>每週目標</th></tr></thead><tbody id="staffRows"></tbody></table></div></section>
+    <section id="positions" class="page hidden"><div class="card"><table><thead><tr><th>院所</th><th>職位</th><th>職稱</th><th>早</th><th>午</th><th>晚</th><th>假早</th><th>假午</th></tr></thead><tbody id="demandRows"></tbody></table></div></section>
+    <section id="leave" class="page hidden"><div class="card row"><label class="field">員工<select id="leaveStaff"></select></label><label class="field">日期<input id="leaveDate" type="date"></label><label class="field">節次<select id="leaveShift"><option value="ALL">全天</option><option value="E">早班</option><option value="A">午班</option><option value="N">晚班</option><option value="HE">假日早</option><option value="HA">假日午</option></select></label><button type="button" class="primary" onclick="DRApp.addLeave()">新增</button></div><table><thead><tr><th>員工</th><th>日期</th><th>節次</th><th></th></tr></thead><tbody id="leaveRows"></tbody></table></section>
+    <section id="matrix" class="page hidden"><div class="card matrix-wrap"><table class="matrix"><thead id="matrixHead"></thead><tbody id="matrixBody"></tbody></table></div></section>
+    <section id="draft" class="page hidden"><div class="card"><label class="field">期間<select id="draftPeriod" onchange="DRApp.showPage('draft')"></select></label><div id="draftAlerts"></div><table><thead><tr><th>日期</th><th>班別</th><th>院所</th><th>職位</th><th>人員</th><th>狀態</th></tr></thead><tbody id="draftRows"></tbody></table></div></section>
+    <section id="compliance" class="page hidden"><div class="card"><table><thead><tr><th>人員</th><th>時數</th><th>休假</th><th>週六休/班</th><th>晚接早</th><th>狀態</th></tr></thead><tbody id="complianceRows"></tbody></table></div></section>
+  </main>
+  <script src="js/data.js"></script>
+  <script src="js/rules.js"></script>
+  <script src="js/scheduler.js"></script>
+  <script src="js/excel.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

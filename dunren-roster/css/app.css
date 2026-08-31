@@ -1,0 +1,44 @@
+:root {
+  --navy: #12304a;
+  --teal: #167d82;
+  --pale: #eaf4f4;
+  --line: #d7e2e5;
+  --bg: #f4f7f8;
+  --red: #b42318;
+  --amber: #fff7e4;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); font: 14px Arial, "Microsoft JhengHei", sans-serif; color: #163246; }
+header { background: var(--navy); color: #fff; padding: 18px 5%; }
+header h1 { margin: 0 0 5px; font-size: 22px; }
+header p { margin: 0; opacity: 0.9; font-size: 13px; }
+.wrap { max-width: 1400px; margin: 18px auto; padding: 0 16px; }
+.card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+.row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+.tabs { display: flex; gap: 7px; flex-wrap: wrap; }
+.tabs button { background: #e5f1f1; color: #145b60; }
+.tabs button.active, button.primary { background: var(--teal); color: #fff; }
+button, .file { border: 0; border-radius: 7px; padding: 9px 12px; font: inherit; cursor: pointer; }
+button.danger { background: var(--red); color: #fff; }
+button.secondary { background: #e5f1f1; color: #145b60; }
+button.amber { background: #e3a11a; color: #fff; }
+label.field { display: grid; gap: 4px; font-weight: bold; font-size: 13px; }
+input, select { font: inherit; padding: 8px; border: 1px solid #c9d6d9; border-radius: 6px; background: #fff; }
+table { border-collapse: collapse; width: 100%; background: #fff; }
+th, td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: var(--pale); white-space: nowrap; }
+.hidden { display: none !important; }
+.muted { color: #607783; font-size: 12px; }
+.warning { background: var(--amber); border-left: 4px solid #e3a11a; padding: 10px; border-radius: 6px; }
+.bad { color: var(--red); font-weight: bold; }
+.ok { color: #08745d; font-weight: bold; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+.kpi { font-size: 27px; font-weight: bold; color: var(--teal); }
+.weekend { background: #fff8ef; }
+.period-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.period-chip { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.period-chip.on { background: var(--teal); color: #fff; border-color: var(--teal); }
+.matrix-wrap { overflow-x: auto; }
+.matrix { font-size: 11px; }
+.matrix th, .matrix td { padding: 4px 6px; text-align: center; white-space: nowrap; }
+.matrix td.name { text-align: left; font-weight: bold; }

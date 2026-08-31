@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>醫療人員綜合排班系統</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,650&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+  <!-- 登入 -->
+  <div id="loginGate" class="login-gate">
+    <div class="login-card">
+      <p class="login-kicker">Clinic Staff Roster</p>
+      <h1>醫療人員綜合排班</h1>
+      <p class="login-sub">請以身分登入。各職務主管僅能管理自己職務。</p>
+      <form id="loginForm">
+        <label class="field">帳號</label>
+        <input id="loginUser" type="text" autocomplete="username" required placeholder="例如 admin / nurse / n1" />
+        <label class="field" style="margin-top:10px">密碼</label>
+        <input id="loginPass" type="password" autocomplete="current-password" required placeholder="密碼" />
+        <p id="loginError" class="login-error"></p>
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px">登入</button>
+      </form>
+      <div class="quick-logins">
+        <p>示範帳號（點一下填入）</p>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="admin" data-pass="admin">管理員 admin</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="nurse" data-pass="demo">護理主管</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="dietitian" data-pass="demo">營養主管</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="pharmacist" data-pass="demo">藥師主管</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="educator" data-pass="demo">衛教主管</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="medical" data-pass="demo">醫務主管</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-quick-login data-user="n1" data-pass="demo">同仁 王小玲</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="appShell" class="app hidden">
+    <header class="topbar">
+      <div class="brand">
+        <h1>醫療人員綜合排班</h1>
+        <p>護理師 · 醫務 · 營養師 · 藥師 · 衛教師｜四周變形工時</p>
+      </div>
+      <div class="top-actions">
+        <div id="sessionBadge" class="session-badge"></div>
+        <button class="btn btn-primary" id="btnExcel" type="button">匯出 Excel</button>
+        <button class="btn btn-ghost" id="btnExport" type="button">匯出 JSON</button>
+        <button class="btn btn-ghost" id="btnImport" type="button">匯入</button>
+        <input type="file" id="importFile" accept="application/json" class="hidden" />
+        <button class="btn btn-danger" id="btnReset" type="button">重置示範</button>
+        <button class="btn btn-ghost" id="btnLogout" type="button">登出</button>
+      </div>
+    </header>
+
+    <div id="periodBar" class="period-bar"></div>
+
+    <nav class="nav" aria-label="主選單">
+      <button type="button" data-page="home" class="active">總覽</button>
+      <button type="button" data-page="staff">人員名單</button>
+      <button type="button" data-page="quotas">配班設定</button>
+      <button type="button" data-page="self">自排班</button>
+      <button type="button" data-page="month">期別排班</button>
+      <button type="button" data-page="compliance">四周合規</button>
+    </nav>
+
+    <main id="view"></main>
+
+    <footer class="note">
+      本系統依《勞動基準法》第 30 條之 1（四週變形工時）與第 36 條設計檢核邏輯，僅供排班輔助。
+      實際適用須為中央主管機關指定行業，並經工會或勞資會議同意。資料存於本機瀏覽器 localStorage；登入狀態存於 sessionStorage。
+    </footer>
+  </div>
+
+  <script src="./js/rules.js"></script>
+  <script src="./js/store.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="./js/scheduler.js"></script>
+  <script src="./js/excel.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>
