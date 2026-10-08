@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>醫務櫃檯・護理人員排班系統</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">班</div>
+      <div>
+        <h1 id="orgTitle">醫務櫃檯・護理人員排班系統</h1>
+        <div class="sub">A/B/C 平日・D/E 週六・四週變形工時</div>
+      </div>
+    </div>
+    <div class="period">
+      <button class="btn ghost" data-act="period" data-step="-1" title="上一期">◀</button>
+      <div class="period-label">
+        <div id="periodNo" class="muted"></div>
+        <div id="periodRange" class="range"></div>
+      </div>
+      <button class="btn ghost" data-act="period" data-step="1" title="下一期">▶</button>
+      <button class="btn ghost" data-act="period-today">本期</button>
+    </div>
+    <div class="actions">
+      <button class="btn primary" data-act="generate" data-n="1">⚡ 一鍵排班</button>
+      <label class="btn" title="匯入「預估人班表」Excel：逐日需求、指定班、預假">📥 匯入 Excel<input type="file" accept=".xlsx,.xls,.xlsm" data-act="import-xlsx" hidden></label>
+      <button class="btn" data-act="export-csv">匯出 CSV</button>
+    </div>
+  </header>
+
+  <div id="summary" class="summary"></div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="grid" class="active">排班大表</button>
+    <button data-tab="day">當日崗位</button>
+    <button data-tab="person">個人班表</button>
+    <button data-tab="legal">法規平衡</button>
+    <button data-tab="settings">智慧排班與設定</button>
+  </nav>
+
+  <main id="main"></main>
+
+  <div id="modal" class="modal hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/audit.js"></script>
+  <script src="js/export.js"></script>
+  <script src="js/vendor/xlsx.full.min.js"></script>
+  <script src="js/importer.js"></script>
+  <script src="data/presets.js" onerror="void 0"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
