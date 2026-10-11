@@ -21,8 +21,8 @@ function run(state, start) {
 }
 function errorsOf(a) { return a.issues.filter((x) => x.level === 'error'); }
 function errText(a) { return errorsOf(a).slice(0, 3).map((x) => `${x.pid} ${x.date || ''} ${x.msg}`).join('；'); }
-function setDemand(state, stationId, min, max) {
-  state.shifts.forEach((s) => { state.demand[s.code][stationId] = { min, max }; });
+function setDemand(state, stationId, min, max, site) {
+  state.shifts.forEach((s) => { state.demand[site || 'neili'][s.code][stationId] = { min, max }; });
 }
 function spreadOf(arr) { return Math.max.apply(null, arr) - Math.min.apply(null, arr); }
 
@@ -33,20 +33,137 @@ test('預設名單 F1–F5、N1–N9、P1–P4', () => {
   eq(s.staff.filter((p) => p.group === 'nurse').length, 9);
   eq(s.staff.filter((p) => p.group === 'part').length, 4);
   eq(s.shifts.map((x) => x.code).join(''), 'ABCDE');
-  eq(s.demand.A.counter.min, 4);
-  eq(s.demand.C.endo.max, 2);
+  eq(s.demand.neili.A.counter.min, 4);
+  eq(s.demand.neili.C.endo.max, 2);
+  eq(s.sites.map((x) => x.name).join('、'), '內壢敦仁、青埔敦仁、新陳代謝、康華藥局、睿康檢驗所、康華健康');
+  ok(s.staff.every((p) => p.site === 'neili'), '預設同仁都在內壢敦仁');
 });
-test('班別時數：護理 C 18:00–21:30（3.5h、BC 7.5h）；櫃檯 C 17:30–21:30（4h、BC 8h）', () => {
-  const s = C.createState(), sm = E.shiftMap(s), cm = E.shiftMap(s, 'counter'), nm = E.shiftMap(s, 'nurse');
-  eq(E.shiftHours(sm.A), 4); eq(E.shiftHours(nm.C), 3.5); eq(E.shiftHours(cm.C), 4);
-  eq(cm.C.start, '17:30'); eq(nm.C.start, '18:00');
-  eq(E.spanOf(nm, ['A', 'B']).hours, 8); eq(E.spanOf(nm, ['B', 'C']).hours, 7.5);
-  eq(E.spanOf(cm, ['B', 'C']).hours, 8); eq(E.spanOf(cm, ['A', 'C']).hours, 8);
+test('舊版資料（單一院所需求）自動移到內壢敦仁', () => {
+  const old = C.createState();
+  old.demand = { A: { counter: { min: 3, max: 3 } } };
+  old.dateDemand = { '2026-09-01': { A: { lab: { min: 1, max: 1 } } } };
+  old.staff[0].site = '青埔';
+  old.staff[1].site = '本院';
+  const s = C.normalize(JSON.parse(JSON.stringify(old)));
+  eq(s.demand.neili.A.counter.min, 3);
+  eq(s.demand.qingpu.A.counter.min, 2);
+  eq(s.dateDemand.neili['2026-09-01'].A.lab.min, 1);
+  eq(s.staff[0].site, 'qingpu');
+  eq(s.staff[1].site, 'neili');
 });
-test('兼職支援櫃檯 C 用櫃檯時間，支援跟診 C 用護理時間', () => {
+test('Excel 院址「12號」「敦仁12號」對應新陳代謝', () => {
+  eq(C.siteIdOf('12號'), 'metab');
+  eq(C.siteIdOf('敦仁12號'), 'metab');
+  eq(C.siteIdOf('敦仁診所'), 'neili');
+  eq(C.siteIdOf('敦仁青埔'), 'qingpu');
+  eq(C.siteIdOf('康華藥局'), 'pharmacy');
+  eq(C.siteIdOf('睿康檢驗所'), 'ruikang');
+  eq(C.siteIdOf('康華健康'), 'health');
+});
+test('藥師（調劑）、醫檢師（醫檢）為自動排班組別；只有康華藥局／睿康檢驗所預設有需求', () => {
   const s = C.createState();
+  eq(s.stations.map((x) => x.name).join('、'), '櫃檯、胃鏡室、檢驗室、跟診、調劑、醫檢');
+  eq(E.stationGroup(s, 'dispense'), 'pharmacist');
+  eq(E.stationGroup(s, 'medlab'), 'medtech');
+  ok(E.isAutoGroup('pharmacist') && E.isAutoGroup('medtech'));
+  eq(s.demand.neili.A.dispense.max, 0);
+  eq(s.demand.neili.A.medlab.max, 0);
+  eq(s.demand.pharmacy.A.dispense.min, 1);
+  eq(s.demand.ruikang.A.medlab.max, 2);
+  eq(s.demand.pharmacy.A.counter.max, 0, '康華藥局不預設櫃檯');
+  eq(s.demand.ruikang.B.counter.max, 0, '睿康檢驗所不預設櫃檯');
+  eq(s.demand.health.A.counter.min, 1);
+  eq(C.newStaff('pharmacist', 'PH1', 1).skills.join(), 'dispense');
+  eq(C.newStaff('medtech', 'MT1', 1).skills.join(), 'medlab');
+  ok(!C.newStaff('nurse', 'N99', 99).skills.includes('medlab'));
+  eq(C.nextId(s, 'medtech'), 'MT1');
+  const imp = require(path.join(__dirname, '../js/importer.js'));
+  eq(imp.stationOfLabel('調劑一'), 'dispense');
+  eq(imp.stationOfLabel('醫檢'), 'medlab');
+  eq(imp.stationOfLabel('檢驗一'), 'lab');
+});
+test('舊資料：調劑／醫檢原屬護理組、藥師原為手動組別 → 開啟時改為各自組別', () => {
+  const old = C.createState();
+  old.stations.find((x) => x.id === 'dispense').group = 'nurse';
+  old.stations.find((x) => x.id === 'medlab').optIn = true;
+  const s = C.normalize(JSON.parse(JSON.stringify(old)));
+  eq(s.stations.find((x) => x.id === 'dispense').group, 'pharmacist');
+  ok(!('optIn' in s.stations.find((x) => x.id === 'medlab')));
+});
+test('舊資料：康華藥局／睿康檢驗所櫃檯舊預設 1 人改為 0；使用者改過的不動', () => {
+  const old = C.createState();
+  old.shifts.forEach((x) => { old.demand.pharmacy[x.code].counter = { min: 1, max: 1 }; old.demand.ruikang[x.code].counter = { min: 1, max: 1 }; });
+  old.demand.ruikang.A.counter = { min: 2, max: 2 };
+  const s = C.normalize(JSON.parse(JSON.stringify(old)));
+  ok(s.shifts.every((x) => s.demand.pharmacy[x.code].counter.max === 0));
+  eq(s.demand.ruikang.A.counter.min, 2);
+  eq(s.demand.ruikang.B.counter.min, 1);
+});
+test('藥師排在康華藥局、醫檢師排在睿康檢驗所，各自排到調劑／醫檢且符合法規', () => {
+  const s = C.createState();
+  ['PH1', 'PH2'].forEach((id, i) => s.staff.push(Object.assign(C.newStaff('pharmacist', id, i + 1), { site: 'pharmacy' })));
+  ['MT1', 'MT2', 'MT3'].forEach((id, i) => s.staff.push(Object.assign(C.newStaff('medtech', id, i + 1), { site: 'ruikang' })));
+  const sched = E.generate(s, START);
+  const at = (pid, sid) => E.periodDates(START).reduce((n, d) => {
+    const e = sched[pid][d];
+    return n + E.workCodes(e).filter((c) => e.posts && e.posts[c] && e.posts[c].station === sid).length;
+  }, 0);
+  ok(at('PH1', 'dispense') > 30, `PH1 調劑 ${at('PH1', 'dispense')} 節`);
+  ok(at('MT1', 'medlab') > 30, `MT1 醫檢 ${at('MT1', 'medlab')} 節`);
+  const all = A.analyzeSites(s, sched, START);
+  eq(all.pharmacy.summary.errors, 0, errText(all.pharmacy));
+  eq(all.ruikang.summary.errors, 0, errText(all.ruikang));
+  ok(all.pharmacy.capacity.groups.pharmacist.staff === 2);
+  ok(all.ruikang.fairness.medtech, '醫檢師有公平度');
+  const wk = E.periodDates(START).slice(1, 6);
+  ok(wk.every((d) => all.ruikang.coverage.cells[`${d}|A|medlab`].n >= 1), '平日早班醫檢至少 1 人');
+});
+test('重新匯入 Excel 保留藥師與醫檢師', () => {
+  const s = C.createState();
+  s.staff.push(Object.assign(C.newStaff('pharmacist', 'PH1', 1), { name: '林藥師', site: 'pharmacy' }));
+  s.staff.push(Object.assign(C.newStaff('medtech', 'MT1', 1), { name: '張醫檢', site: 'ruikang' }));
+  require(path.join(__dirname, '../js/importer.js')).applyToState(s, require(path.join(__dirname, '../js/importer.js')).parseRows(sampleRows(), {}), {});
+  ok(s.staff.some((p) => p.id === 'PH1') && s.staff.some((p) => p.id === 'MT1'));
+});
+test('舊資料只有三院所時自動補上新院所與需求', () => {
+  const old = C.createState();
+  old.sites = old.sites.slice(0, 3);
+  ['pharmacy', 'ruikang', 'health'].forEach((id) => { delete old.demand[id]; delete old.dateDemand[id]; delete old.weekDemand[id]; });
+  const s = C.normalize(JSON.parse(JSON.stringify(old)));
+  eq(s.sites.length, 6);
+  eq(s.demand.ruikang.A.medlab.max, 2);
+  eq(s.demand.pharmacy.A.clinic.max, 0);
+});
+const r2 = (x) => Math.round(x * 100) / 100;
+function counterCAt1730(s) { s.shifts.find((x) => x.code === 'C').groupTimes = { counter: { start: '17:30', end: '21:30' } }; return s; }
+test('班別時數：C 17:50–21:30 全員一致（3h40m、BC 7.67h）', () => {
+  const s = C.createState(), sm = E.shiftMap(s), cm = E.shiftMap(s, 'counter'), nm = E.shiftMap(s, 'nurse');
+  eq(E.shiftHours(sm.A), 4); eq(r2(E.shiftHours(nm.C)), 3.67); eq(r2(E.shiftHours(cm.C)), 3.67);
+  eq(cm.C.start, '17:50'); eq(nm.C.start, '17:50'); eq(nm.C.end, '21:30');
+  eq(E.spanOf(nm, ['A', 'B']).hours, 8); eq(r2(E.spanOf(nm, ['B', 'C']).hours), 7.67);
+});
+test('舊版預設 C 班（護理 18:00／櫃檯 17:30）自動改為 17:50–21:30；自訂過的不動', () => {
+  const old = counterCAt1730(C.createState());
+  old.shifts.find((x) => x.code === 'C').start = '18:00';
+  const c = C.normalize(JSON.parse(JSON.stringify(old))).shifts.find((x) => x.code === 'C');
+  eq(c.start, '17:50'); ok(!c.groupTimes.counter); eq(c.groupTimes.doctor.start, '18:00');
+  const custom = C.createState();
+  custom.shifts.find((x) => x.code === 'C').start = '18:10';
+  eq(C.normalize(JSON.parse(JSON.stringify(custom))).shifts.find((x) => x.code === 'C').start, '18:10');
+});
+test('櫃檯另訂 C 時間時：兼職支援櫃檯用櫃檯時間，支援跟診用一般時間', () => {
+  const s = counterCAt1730(C.createState());
   eq(E.entrySpan(s, { kind: 'work', shifts: ['C'], posts: { C: { station: 'counter' } } }, 'part').hours, 4);
-  eq(E.entrySpan(s, { kind: 'work', shifts: ['C'], posts: { C: { station: 'clinic' } } }, 'part').hours, 3.5);
+  eq(r2(E.entrySpan(s, { kind: 'work', shifts: ['C'], posts: { C: { station: 'clinic' } } }, 'part').hours), 3.67);
+});
+test('醫師依門診時間計時（早 08:30、午 14:00、晚 18:00），晚診接隔日早診剛好 11 小時', () => {
+  const s = C.createState(), dm = E.shiftMap(s, 'doctor');
+  eq(dm.A.start, '08:30'); eq(dm.B.start, '14:00'); eq(dm.C.start, '18:00'); eq(dm.E.end, '17:30');
+  eq(E.spanOf(dm, ['A', 'B', 'C']).hours, 10.5);
+  ok(E.restGapMin(dm, ['C'], ['A']) >= 660);
+  const old = C.createState();
+  old.shifts.forEach((x) => { delete x.groupTimes; });
+  eq(C.normalize(JSON.parse(JSON.stringify(old))).shifts.find((x) => x.code === 'B').groupTimes.doctor.start, '14:00', '舊資料補上醫師門診時間');
 });
 test('C 班下班到隔日 A 班不足 11 小時', () => {
   const s = C.createState(), sm = E.shiftMap(s);
@@ -90,8 +207,33 @@ test('正職（櫃檯＋護理）四週工時皆在 152–160h，連續 8 期', 
 test('護理週五晚班不接週六單節（零單節日）', () => {
   r0.a.metrics.filter((m) => m.group === 'nurse').forEach((m) => eq(m.single, 0, `${m.id} 單節`));
 });
-test('AB/BC 為主，AC 少於相鄰班', () => {
-  ok(r0.a.summary.gap < r0.a.summary.adj / 3, `AC ${r0.a.summary.gap} vs AB/BC ${r0.a.summary.adj}`);
+test('標準班別：醫務櫃檯、護理只排 AB／BC／DE，連續 8 期零 AC、零單節', () => {
+  eq(C.createState().settings.standardGroups.join(), 'counter,nurse,pharmacist');
+  for (let k = 0; k < 8; k++) {
+    const st = E.addDays(START, 28 * k);
+    const { a } = run(C.createState(), st);
+    a.metrics.filter((m) => m.group !== 'part').forEach((m) => {
+      eq(m.gap, 0, `${st} ${m.id} AC`);
+      eq(m.single, 0, `${st} ${m.id} 單節`);
+    });
+  }
+});
+test('標準班別：藥師也只排相鄰兩節；取消勾選的組別恢復可排 AC', () => {
+  const s = C.createState();
+  ['PH1', 'PH2', 'PH3'].forEach((id, i) => s.staff.push(Object.assign(C.newStaff('pharmacist', id, i + 1), { site: 'pharmacy' })));
+  s.shifts.forEach((x) => { s.demand.pharmacy[x.code].dispense = { min: 2, max: 2 }; });
+  const sched = E.generate(s, START);
+  const ph = A.analyzeSites(s, sched, START).pharmacy;
+  ph.metrics.forEach((m) => { eq(m.gap, 0, `${m.id} AC`); eq(m.single, 0, `${m.id} 單節`); });
+  eq(ph.summary.errors, 0, errText(ph));
+  s.settings.standardGroups = ['nurse', 'pharmacist'];
+  ok(run(s).a.metrics.some((m) => m.group === 'counter' && m.gap > 0), '櫃檯取消標準班別後應可排 AC');
+  ok(E.isStandardGroup(s, 'nurse') && !E.isStandardGroup(s, 'counter') && !E.isStandardGroup(s, 'medtech'));
+});
+test('標準班別清單：平日 AB、BC，週六 DE', () => {
+  const s = C.createState();
+  eq(E.standardCombos(s, E.dayShifts(s, '2026-08-31')).map((c) => c.codes.join('')).join(), 'AB,BC');
+  eq(E.standardCombos(s, E.dayShifts(s, '2026-09-05')).map((c) => c.codes.join('')).join(), 'DE');
 });
 test('各組工時差距 ≤ 8h；晚班差距 櫃檯 ≤ 5、護理 ≤ 8 次', () => {
   [['counter', 5], ['nurse', 8]].forEach(([g, lim]) => {
@@ -152,16 +294,18 @@ console.log('\n[不同期別]');
 });
 
 console.log('\n[時段、人員可增修刪]');
-test('護理 C 也改 17:30：零違規、工時 ≤ 160', () => {
+test('C 改 17:30：零違規、工時 ≤ 160', () => {
   const s = C.createState();
   s.shifts.find((x) => x.code === 'C').start = '17:30';
   const { a } = run(s);
   eq(errorsOf(a).length, 0, errText(a));
 });
-test('取消櫃檯另訂時間：櫃檯 C 回到 18:00', () => {
-  const s = C.createState();
+test('櫃檯另訂 C 17:30：零違規；取消後回到 17:50', () => {
+  const s = counterCAt1730(C.createState());
+  eq(E.shiftMap(s, 'counter').C.start, '17:30');
+  eq(errorsOf(run(s).a).length, 0, errText(run(s).a));
   delete s.shifts.find((x) => x.code === 'C').groupTimes;
-  eq(E.shiftMap(s, 'counter').C.start, '18:00');
+  eq(E.shiftMap(s, 'counter').C.start, '17:50');
   const { a } = run(s);
   eq(errorsOf(a).length, 0, errText(a));
 });
@@ -170,7 +314,7 @@ test('刪除 E 班、新增週六晚班 F：零違規且 F 只出現在週六', 
   s.shifts = s.shifts.filter((x) => x.code !== 'E');
   s.shifts.push({ code: 'F', name: '週六晚班', start: '14:00', end: '17:00', days: [6] });
   C.ensureDemand(s);
-  ok(!s.demand.E, 'E 需求應移除');
+  ok(!s.demand.neili.E && !s.demand.metab.E, 'E 需求應移除');
   const { sched, a } = run(s);
   eq(errorsOf(a).length, 0, errText(a));
   Object.keys(sched).forEach((pid) => Object.keys(sched[pid]).forEach((d) => {
@@ -264,10 +408,12 @@ test('崗位明細 CSV 與 TSV', () => {
   ok(X.buildPostCSV(base, r0.sched, START).includes('胃鏡室'));
   ok(X.buildTSV(base, r0.sched, START).split('\n')[0].includes('\t'));
 });
-test('LINE 通報含櫃檯與各崗位、C 班分列兩組時間，週日顯示休診', () => {
+test('LINE 通報含櫃檯與各崗位、C 班 17:50-21:30（櫃檯另訂時分列兩組），週日顯示休診', () => {
   const t = X.lineNotice(base, r0.sched, '2026-08-31');
   ok(t.includes('櫃檯') && t.includes('胃鏡室') && t.includes('A 班'));
-  ok(t.includes('護理 18:00-21:30') && t.includes('櫃檯 17:30-21:30'), t.split('\n').find((x) => x.includes('C 班')));
+  ok(t.includes('C 班 17:50-21:30'), t.split('\n').find((x) => x.includes('C 班')));
+  const t2 = X.lineNotice(counterCAt1730(C.createState()), r0.sched, '2026-08-31');
+  ok(t2.includes('護理 17:50-21:30') && t2.includes('櫃檯 17:30-21:30'), t2.split('\n').find((x) => x.includes('C 班')));
   ok(X.lineNotice(base, r0.sched, '2026-08-30').includes('休診'));
 });
 
@@ -306,7 +452,7 @@ test('指定班保留原崗位；固定人員其他日不被系統排班', () =>
 });
 test('逐日需求優先於班別預設；未列出的崗位視為 0', () => {
   const s = C.createState();
-  s.dateDemand = { '2026-09-01': { A: { counter: { min: 2, max: 2 } } } };
+  s.dateDemand.neili = { '2026-09-01': { A: { counter: { min: 2, max: 2 } } } };
   eq(E.demandOf(s, 'A', 'counter', '2026-09-01').min, 2);
   eq(E.demandOf(s, 'A', 'lab', '2026-09-01').min, 0);
   eq(E.demandOf(s, 'A', 'counter', '2026-09-02').min, 4);
@@ -331,6 +477,7 @@ function sampleRows() {
     row({ 0: '醫務', 3: '志玲休' }), row({ 0: '護理', 3: '小美晚休' }),
     row(shiftRow),
     row({ 0: '1診', 3: '張醫師' }),
+    row({ 0: '2診', 1: 'GI', 2: '青埔', 3: '李醫師', 5: '李醫師-八德', 6: '李醫師-請假' }),
     row({ 0: '總合', 3: 3 }), row({ 0: '可休', 1: 2 }), row({ 0: '醫務', 3: 1 }), row({ 0: '可休', 1: 3 }), row({ 0: '護理', 3: 2 }),
     row({ 0: '櫃臺一', 3: '醫務', 4: '醫務', 18: '醫務' }),
     row({ 0: '檢驗一', 3: '護理', 4: '王小美', 5: '支援' }),
@@ -368,13 +515,14 @@ test('寫入系統：逐日需求、指定班、預假，並可直接排班', ()
   const s = C.createState();
   const sum = I.applyToState(s, I.parseRows(sampleRows(), {}), {});
   eq(sum.periods[0], '2026-08-30');
-  const d = '2026-08-31';
-  eq(s.dateDemand[d].A.counter.min, 1);
-  eq(s.dateDemand[d].A.lab.min, 1);
-  eq(s.dateDemand[d].A.clinic.min, 1);
-  eq(s.dateDemand[d].B.lab.min, 1);
-  eq(s.dateDemand[d].C.lab.min, 1);
-  eq(s.dateDemand['2026-09-05'].D.counter.min, 1);
+  const d = '2026-08-31', dd = s.dateDemand.neili;
+  eq(dd[d].A.counter.min, 1);
+  eq(dd[d].A.lab.min, 1);
+  eq(dd[d].A.clinic.min, 1);
+  eq(dd[d].B.lab.min, 1);
+  eq(dd[d].C.lab.min, 1);
+  eq(dd['2026-09-05'].D.counter.min, 1);
+  ok(!s.dateDemand.metab[d], 'Excel 沒有的院所不寫入逐日需求');
   const mei = s.staff.find((p) => p.name === '王小美'), ling = s.staff.find((p) => p.name === '林志玲');
   eq(mei.group, 'part');
   ok(mei.fixed);
@@ -383,6 +531,244 @@ test('寫入系統：逐日需求、指定班、預假，並可直接排班', ()
   const { sched } = run(s, sum.periods[0]);
   eq(sched[ling.id][d].kind, '休');
   eq(sched[mei.id][d].posts.B.station, 'lab');
+});
+
+console.log('\n[三院所分別排班]');
+function threeSites() {
+  const s = C.createState();
+  ['F4', 'F5', 'N7', 'N8', 'N9'].forEach((id) => { s.staff.find((p) => p.id === id).site = 'qingpu'; });
+  s.staff.push(Object.assign(C.newStaff('counter', 'F6', 6), { site: 'metab' }));
+  s.staff.push(Object.assign(C.newStaff('nurse', 'N10', 10), { site: 'metab' }));
+  s.staff.push(Object.assign(C.newStaff('nurse', 'N11', 11), { site: 'metab' }));
+  return s;
+}
+test('院所視圖只含該院同仁與該院需求', () => {
+  const s = threeSites();
+  const q = E.siteView(s, 'qingpu');
+  eq(E.activeStaff(q).map((p) => p.id).join(','), 'F4,F5,N7,N8,N9');
+  eq(E.demandOf(q, 'A', 'counter').min, 2);
+  eq(E.demandOf(E.siteView(s, 'metab'), 'A', 'endo').max, 0);
+  eq(E.demandOf(s, 'A', 'counter').min, 4, '完整 state 以第一院所為準');
+});
+test('同仁只排在自己院所的崗位，各院覆蓋各自計算', () => {
+  const s = threeSites();
+  const sched = E.generate(s, START);
+  ok(Object.keys(sched).length === s.staff.length, '三院同仁都有班表');
+  const all = A.analyzeSites(s, sched, START);
+  eq(Object.keys(all).join(','), 'neili,qingpu,metab');
+  Object.entries(all).forEach(([site, a]) => {
+    eq(errorsOf(a).length, 0, `${site}：${errText(a)}`);
+    const ids = new Set(E.activeStaff(E.siteView(s, site)).map((p) => p.id));
+    Object.values(a.coverage.cells).forEach((c) => c.people.forEach((p) => ok(ids.has(p.id), `${p.id} 不屬於 ${site}`)));
+  });
+  const cnt = (site, d, code) => Object.values(all[site].coverage.cells).filter((c) => c.date === d && c.code === code && c.station === 'counter')[0].n;
+  ok(cnt('qingpu', '2026-09-01', 'A') <= 2, '青埔櫃檯不超過該院上限');
+});
+test('沒有同仁的院所略過，不產生缺口', () => {
+  const s = C.createState();
+  const all = A.analyzeSites(s, E.generate(s, START), START);
+  eq(Object.keys(all).join(','), 'neili');
+});
+test('CSV 與崗位明細含院所欄', () => {
+  const s = threeSites();
+  const sched = E.generate(s, START);
+  ok(X.buildCSV(s, sched, START).split('\r\n')[0].includes('院所'));
+  const post = X.buildPostCSV(s, sched, START);
+  ok(post.includes('青埔敦仁') && post.includes('新陳代謝'));
+  ok(X.lineNotice(s, sched, '2026-08-31').includes('■ 新陳代謝'));
+});
+
+console.log('\n[醫師、營養師、衛教師（手動填班）]');
+test('手動組別：醫師、營養師、衛教師，編號 DR／RD／HE；藥師 PH 改為自動排班', () => {
+  eq(C.GROUPS.filter((g) => g.manual).map((g) => g.name).join('、'), '醫師、營養師、衛教師');
+  const s = C.createState();
+  eq(C.nextId(s, 'doctor'), 'DR1');
+  s.staff.push(C.newStaff('doctor', 'DR1', 1));
+  eq(C.nextId(s, 'doctor'), 'DR2');
+  eq(C.nextId(s, 'pharmacist'), 'PH1');
+});
+function withDoctor() {
+  const s = C.createState();
+  s.staff.push(Object.assign(C.newStaff('doctor', 'DR1', 1), { name: '王醫師' }));
+  s.staff.push(Object.assign(C.newStaff('dietitian', 'RD1', 1), { name: '陳營養師' }));
+  return s;
+}
+test('一鍵排班不排手動組別，重排時保留已填的班', () => {
+  const s = withDoctor();
+  const first = E.generate(s, START);
+  ok(!first.DR1 && !first.RD1, '手動組別不自動排');
+  first.DR1 = { '2026-08-31': { kind: 'work', shifts: ['A', 'B'], posts: {} } };
+  const again = E.generate(s, START, first);
+  eq(again.DR1['2026-08-31'].shifts.join(''), 'AB');
+  ok(again.F1, '自動組別照常重排');
+});
+test('手動組別未填班不檢核；填了班照算工時並檢核 11 小時', () => {
+  const s = withDoctor();
+  const sched = E.generate(s, START);
+  ok(!A.legalChecks(s, sched, START).some((x) => x.pid === 'DR1'), '未填班不應有違規');
+  const cThenA = { '2026-08-31': { kind: 'work', shifts: ['C'], posts: {} }, '2026-09-01': { kind: 'work', shifts: ['A'], posts: {} } };
+  sched.RD1 = cThenA;
+  ok(A.legalChecks(s, sched, START).some((x) => x.pid === 'RD1' && x.rule === 'rest'), '營養師 C 21:30 → 隔日 A 08:00 不足 11 小時');
+  eq(A.personMetrics(s, sched, START, s.staff.find((p) => p.id === 'RD1')).hours, 7.67);
+  sched.DR1 = cThenA;
+  ok(!A.legalChecks(s, sched, START).some((x) => x.pid === 'DR1' && x.rule === 'rest'), '醫師晚診 21:30 → 隔日早診 08:30 剛好 11 小時');
+  eq(A.personMetrics(s, sched, START, s.staff.find((p) => p.id === 'DR1')).hours, 7);
+});
+test('醫師只計工時與節數，不做勞基法檢核（早午晚三診也不列違規）', () => {
+  const s = withDoctor();
+  const sched = E.generate(s, START);
+  sched.DR1 = {};
+  E.periodDates(START).slice(1, 7).forEach((d) => { sched.DR1[d] = { kind: 'work', shifts: E.dow(d) === 6 ? ['D', 'E'] : ['A', 'B', 'C'], posts: {} }; });
+  ok(!A.legalChecks(s, sched, START).some((x) => x.pid === 'DR1'));
+  const m = A.personMetrics(s, sched, START, s.staff.find((p) => p.id === 'DR1'));
+  eq(m.sessions, 17); eq(m.hours, 59.5);
+});
+test('手動組別不計入崗位覆蓋；LINE 通報另列醫師', () => {
+  const s = withDoctor();
+  const sched = E.generate(s, START);
+  sched.DR1 = { '2026-08-31': { kind: 'work', shifts: ['A'], posts: {} } };
+  const cov = A.coverage(s, sched, START);
+  ok(!Object.values(cov.cells).some((c) => c.people.some((p) => p.id === 'DR1')));
+  ok(X.lineNotice(s, sched, '2026-08-31').includes('醫師：王醫師'));
+  eq(X.cellText(s, sched.DR1['2026-08-31'], true), 'A');
+});
+test('匯入 Excel 保留醫師等名單與已填的班', () => {
+  const s = withDoctor();
+  s.schedules['2026-08-30'] = { DR1: { '2026-08-31': { kind: 'work', shifts: ['A'], posts: {} } } };
+  I.applyToState(s, I.parseRows(sampleRows(), {}), {});
+  ok(s.staff.some((p) => p.id === 'DR1') && s.staff.some((p) => p.id === 'RD1'));
+  eq(s.schedules['2026-08-30'].DR1['2026-08-31'].shifts.join(''), 'A');
+});
+test('匯入 Excel 醫師名單與門診班：院所、科別、外診備註、請假', () => {
+  const p = I.parseRows(sampleRows(), {});
+  eq(p.doctors.join('、'), '張醫師、李醫師');
+  eq(p.doctorCells.length, 4);
+  ok(p.doctorCells.find((x) => x.note === '請假').leave);
+  const s = C.createState();
+  const sum = I.applyToState(s, p, {});
+  const zhang = s.staff.find((x) => x.name === '張醫師'), li = s.staff.find((x) => x.name === '李醫師');
+  eq(zhang.group, 'doctor'); eq(zhang.id, 'DR1'); eq(zhang.site, 'neili');
+  eq(li.id, 'DR2'); eq(li.site, 'qingpu'); eq(li.title, '腸胃肝膽科醫師');
+  eq(sum.doctors.length, 2); eq(sum.doctorSessions, 3);
+  const sc = s.schedules['2026-08-30'];
+  eq(sc.DR2['2026-08-31'].shifts.join(''), 'AC');
+  eq(sc.DR2['2026-08-31'].note, 'C 八德');
+  eq(sc.DR2['2026-09-01'].kind, '休', '請假當天標休');
+  eq(sc.DR1['2026-09-02'].kind, '休', '沒門診的日子標休');
+  eq(sc.DR1['2026-08-30'].kind, '例', '週日標例');
+  ok(!sc.DR1['2026-09-06'], 'Excel 沒涵蓋的週不填');
+  const sched = E.generate(s, '2026-08-30', sc);
+  eq(sched.DR2['2026-08-31'].shifts.join(''), 'AC', '重排保留醫師門診');
+  ok(sched.F1, '其他同仁照常排班');
+  const again = I.applyToState(s, I.parseRows(sampleRows(), {}), {});
+  eq(s.staff.filter((x) => x.group === 'doctor').length, 2, '重複匯入不會新增重複醫師');
+  eq(again.doctors[1].id, 'DR2');
+});
+
+console.log('\n[需求標準表、希望休假、希望班別、預排建議]');
+test('星期需求標準：優先於班別預設；Excel 逐日需求仍最優先', () => {
+  const s = C.createState();
+  s.weekDemand.neili = { 3: { A: { counter: { min: 2, max: 2 } } } };
+  eq(E.demandOf(s, 'A', 'counter', '2026-09-02').min, 2, '週三另設');
+  eq(E.demandOf(s, 'A', 'counter', '2026-09-01').min, 4, '週二沿用預設');
+  eq(E.demandOf(s, 'A', 'lab', '2026-09-02').min, s.demand.neili.A.lab.min, '週三未另設的崗位沿用預設');
+  ok(E.hasWeekOverride(s, 'A', 'counter', 3));
+  ok(!E.hasWeekOverride(s, 'A', 'counter', 2));
+  s.dateDemand.neili = { '2026-09-02': { A: { counter: { min: 1, max: 1 } } } };
+  eq(E.demandOf(s, 'A', 'counter', '2026-09-02').min, 1);
+  eq(E.weekdayDemand(s, 'A', 'counter', 3).min, 2, '標準表顯示不受逐日需求影響');
+  s.dateDemand.neili = {};
+  const { a } = run(s);
+  eq(a.coverage.cells['2026-09-02|A|counter'].min, 2);
+});
+test('舊資料沒有 weekDemand／wishes 時自動補上', () => {
+  const old = C.createState();
+  delete old.weekDemand; delete old.wishes;
+  const s = C.normalize(JSON.parse(JSON.stringify(old)));
+  ok(s.weekDemand.neili && s.weekDemand.qingpu, '各院所都有星期需求');
+  eq(JSON.stringify(s.wishes), '{}');
+});
+test('希望班別：在需求範圍內優先排入，且不違反法規', () => {
+  const s = C.createState();
+  const wishes = {};
+  const plan = [['N1', 'AB'], ['N2', 'BC'], ['F1', 'AB'], ['F3', 'BC']];
+  E.periodDates(START).slice(1, 6).forEach((d) => {
+    wishes[d] = {};
+    plan.forEach(([pid, codes]) => { wishes[d][pid] = { shifts: codes.split('') }; });
+  });
+  s.wishes = wishes;
+  const { sched, a } = run(s);
+  const r = A.wishReport(s, sched, START);
+  eq(r.wish, 20);
+  ok(r.exact >= 16, `完全符合 ${r.exact}/20`);
+  eq(errorsOf(a).length, 0, errText(a));
+});
+test('人力不足時，只上單節的希望不會擴大缺口（改排含該節的兩節）', () => {
+  const s = C.createState();
+  s.wishes = {};
+  E.periodDates(START).forEach((d) => {
+    if (E.dow(d) < 1 || E.dow(d) > 5) return;
+    s.wishes[d] = { N5: { shifts: ['A'] }, N6: { shifts: ['C'] } };
+  });
+  const gaps = run(C.createState()).a.summary.shortSessions;
+  const { sched, a } = run(s);
+  ok(a.summary.shortSessions <= gaps, `缺口 ${a.summary.shortSessions}，未填希望時 ${gaps}`);
+  const r = A.wishReport(s, sched, START);
+  ok(r.exact + r.partial >= r.wish * 0.6, `至少包含希望的那一節：${r.exact}+${r.partial}/${r.wish}`);
+});
+test('希望休假一定遵守；與希望班別同日時以休假為準', () => {
+  const s = C.createState();
+  const d = '2026-09-03';
+  s.requests = { [d]: { N3: { off: true, note: '希望休假' } } };
+  s.wishes = { [d]: { N3: { shifts: ['A', 'B'] } } };
+  const { sched } = run(s);
+  eq(sched.N3[d].kind, '休');
+  const st = A.wishStatus(s, d, 'N3', sched.N3[d]);
+  eq(st.leave, true);
+  eq(st.wish, 'miss');
+  const r = A.wishReport(s, sched, START);
+  eq(r.leaveOk, 1);
+});
+test('希望上班的日子不會被排成每週休息日', () => {
+  const s = C.createState();
+  const sat = '2026-09-05';
+  s.wishes = { [sat]: {} };
+  s.staff.filter((p) => p.group === 'nurse').forEach((p) => { s.wishes[sat][p.id] = { shifts: ['D'] }; });
+  const { sched } = run(s);
+  const working = s.staff.filter((p) => p.group === 'nurse' && E.workCodes(sched[p.id][sat]).length).length;
+  const base = run(C.createState()).sched;
+  const baseWorking = s.staff.filter((p) => p.group === 'nurse' && E.workCodes(base[p.id][sat]).length).length;
+  ok(working >= baseWorking, `週六上班 ${working} 人，未填希望時 ${baseWorking} 人`);
+});
+test('希望班別只看當天有的班別（週六填 C 會被忽略）', () => {
+  const s = C.createState();
+  s.wishes = { '2026-09-05': { N1: { shifts: ['C', 'D'] } } };
+  eq(E.wishCodes(s, '2026-09-05', 'N1').join(''), 'D');
+  ok(E.sameCodes(['B', 'A'], ['A', 'B']));
+  ok(!E.sameCodes(['A'], ['A', 'B']));
+});
+test('Excel 固定人員：只有該期有指定班時才整期沿用 Excel，其他期別照常排班', () => {
+  const s = C.createState();
+  s.staff.push(Object.assign(C.newStaff('nurse', 'N10', 10), { name: '固定', fixed: true }));
+  s.locks = { '2026-09-02': { N10: { kind: 'work', shifts: ['A'], posts: { A: { station: 'lab' } } } } };
+  const next = E.addDays(START, 28);
+  ok(E.isFixedIn(s, s.staff.find((p) => p.id === 'N10'), START));
+  ok(!E.isFixedIn(s, s.staff.find((p) => p.id === 'N10'), next));
+  const { sched, a } = run(s, next);
+  ok(E.periodDates(next).filter((d) => E.workCodes(sched.N10[d]).length).length >= 18, '下一期應正常排班');
+  ok(!a.metrics.find((m) => m.id === 'N10').fixed);
+});
+test('重新匯入 Excel 只清掉 Excel 帶入的預假，同仁自填的保留', () => {
+  const s = C.createState();
+  I.applyToState(s, I.parseRows(sampleRows(), {}), {});
+  const d = '2026-08-31';
+  const ling = s.staff.find((p) => p.name === '林志玲');
+  eq(s.requests[d][ling.id].src, 'excel');
+  const other = s.staff.find((p) => p.name === '陳大文');
+  s.requests['2026-09-01'] = { [other.id]: { off: true, note: '希望休假' } };
+  I.applyToState(s, I.parseRows(sampleRows(), {}), {});
+  ok(s.requests['2026-09-01'] && s.requests['2026-09-01'][other.id], '自填休假保留');
+  ok(s.requests[d][ling.id].off, 'Excel 預假重新寫入');
 });
 
 console.log(`\n結果：${pass} 通過，${fail} 失敗\n`);

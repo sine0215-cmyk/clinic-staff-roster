@@ -38,6 +38,8 @@
   function stationOfLabel(label) {
     const s = label || '';
     if (/櫃|醫務行政/.test(s)) return 'counter';
+    if (/調劑|配藥/.test(s)) return 'dispense';
+    if (/醫檢/.test(s)) return 'medlab';
     if (/檢驗/.test(s)) return 'lab';
     if (/鏡|場控|清洗/.test(s)) return 'endo';
     return 'clinic';
@@ -91,7 +93,7 @@
     for (let r = 0; r < rows.length; r++) if (A(r) === '星期') starts.push(r);
     const result = {
       weeks: [], dates: [], staffNames: [], poolSize: {}, cells: [], leaves: [],
-      external: {}, support: 0, unresolved: [], doctors: [],
+      external: {}, support: 0, unresolved: [], doctors: [], doctorCells: [],
     };
     if (!starts.length) return result;
 
@@ -135,10 +137,19 @@
       weekDates.forEach((d) => { if (!result.dates.includes(d)) result.dates.push(d); });
 
       const docEnd = sumRow > 0 ? sumRow : shiftRow + 1;
+      let docSite = '';
       for (let r = shiftRow + 1; r < docEnd; r++) {
+        if (text(rows[r][2])) docSite = text(rows[r][2]);
         cols.forEach((x) => {
-          const v = text(rows[r][x.c]).split('-')[0];
-          if (v && v !== '*' && !nameSet.has(v)) doctors.add(v);
+          const raw = text(rows[r][x.c]);
+          const [v, ...rest] = raw.split('-');
+          if (!v || v === '*' || nameSet.has(v)) return;
+          doctors.add(v);
+          const note = rest.join('-');
+          result.doctorCells.push({
+            date: x.date, idx: x.idx, name: v, note, leave: /請假|休/.test(note),
+            site: docSite, room: A(r), spec: text(rows[r][1]),
+          });
         });
       }
 
@@ -230,7 +241,7 @@
     parsed.cells.forEach((x) => {
       if (x.kind !== 'named') return;
       cnt[x.name] = (cnt[x.name] || 0) + 1;
-      const s = siteShort(x.site) || '本院';
+      const s = C.siteIdOf(siteShort(x.site));
       sites[x.name] = sites[x.name] || {};
       sites[x.name][s] = (sites[x.name][s] || 0) + 1;
       const w = parsed.weeks.findIndex((wk) => wk.dates.includes(x.date));
@@ -241,21 +252,92 @@
       const n = cnt[s.name] || 0, avg = n / weeks;
       const role = avg >= 8 ? 'fixedFT' : avg >= 1 ? 'fixedPT' : 'pool';
       const maxWeek = Math.max(0, ...(perWeek[s.name] || []).map((v) => v || 0));
-      const site = Object.entries(sites[s.name] || { 本院: 1 }).sort((a, b) => b[1] - a[1])[0][0];
+      const site = Object.entries(sites[s.name] || { [C.siteIdOf()]: 1 }).sort((a, b) => b[1] - a[1])[0][0];
       const job = s.side === 'counter' ? '醫務櫃檯' : '護理師';
       const title = role === 'fixedPT' ? `兼職${s.side === 'counter' ? '醫務' : '護理'}` : job;
-      return { name: s.name, side: s.side, sessions: n, avg, role, maxWeek, site, title: site === '本院' ? title : `${title}（${site}）` };
+      return { name: s.name, side: s.side, sessions: n, avg, role, maxWeek, site, title };
     });
+  }
+
+  const SPEC_NAME = { GI: '腸胃肝膽科', 家醫: '家醫科', 新代: '新陳代謝科', 腎內: '腎臟內科', 心內: '心臟內科', 一般: '一般科', 乳外: '乳房外科' };
+
+  /** 醫師：院所與科別取看診節數最多者（請假不計） */
+  function classifyDoctors(parsed) {
+    const by = {};
+    (parsed.doctorCells || []).forEach((x) => {
+      const d = by[x.name] = by[x.name] || { name: x.name, sessions: 0, sites: {}, specs: {} };
+      if (x.leave) return;
+      d.sessions++;
+      const s = C.siteIdOf(siteShort(x.site));
+      d.sites[s] = (d.sites[s] || 0) + 1;
+      if (x.spec) d.specs[x.spec] = (d.specs[x.spec] || 0) + 1;
+    });
+    const top = (o) => (Object.entries(o).sort((a, b) => b[1] - a[1])[0] || [])[0];
+    return Object.values(by).map((d) => {
+      const spec = top(d.specs);
+      return { name: d.name, sessions: d.sessions, site: top(d.sites) || C.siteIdOf(), title: spec ? `${SPEC_NAME[spec] || spec}醫師` : '醫師' };
+    });
+  }
+
+  /** Excel 有排門診的日子寫入門診班；同週其他日子標休（週日標例），供工時與法規檢核 */
+  function applyDoctors(state, parsed, periods, codeOf) {
+    const docs = classifyDoctors(parsed);
+    const idOf = {};
+    docs.forEach((d) => {
+      let p = state.staff.find((x) => x.group === 'doctor' && x.name === d.name);
+      if (!p) {
+        p = C.newStaff('doctor', C.nextId(state, 'doctor'), 0);
+        p.name = d.name;
+        state.staff.push(p);
+      }
+      p.site = d.site;
+      if (!p.title) p.title = d.title;
+      idOf[d.name] = p.id;
+    });
+    const work = {};
+    (parsed.doctorCells || []).forEach((x) => {
+      const code = codeOf(x.date, x.idx);
+      if (x.leave || !code) return;
+      const mine = work[idOf[x.name]] = work[idOf[x.name]] || {};
+      const day = mine[x.date] = mine[x.date] || { codes: [], notes: [] };
+      if (!day.codes.includes(code)) day.codes.push(code);
+      if (x.note && !day.notes.includes(`${code} ${x.note}`)) day.notes.push(`${code} ${x.note}`);
+    });
+    const covered = new Set(parsed.dates);
+    const restDow = state.settings.restDow;
+    let sessions = 0;
+    periods.forEach((p0) => {
+      const sc = state.schedules[p0] = state.schedules[p0] || {};
+      Object.values(idOf).forEach((pid) => {
+        const mine = sc[pid] = sc[pid] || {};
+        E.periodDates(p0).forEach((d) => {
+          const w = work[pid] && work[pid][d];
+          if (w) {
+            const order = E.dayShifts(state, d).map((s) => s.code);
+            mine[d] = { kind: 'work', shifts: order.filter((c) => w.codes.includes(c)), posts: {} };
+            if (w.notes.length) mine[d].note = w.notes.join('、');
+            sessions += w.codes.length;
+          } else if (covered.has(d)) mine[d] = { kind: '休' };
+          else if (E.dow(d) === restDow && [1, 2, 3, 4, 5, 6].some((k) => covered.has(E.addDays(d, k)))) mine[d] = { kind: '例' };
+        });
+      });
+    });
+    return {
+      list: docs.map((d) => ({ name: d.name, id: idOf[d.name], site: d.site, title: d.title, sessions: d.sessions })),
+      sessions,
+    };
   }
 
   function applyToState(state, parsed, opts) {
     opts = opts || {};
     const prefix = { counter: 'F', nurse: 'N', part: 'P' };
     const roles = classify(parsed);
-    const keepPart = state.staff.filter((p) => p.group === 'part' && !p.fixed && !roles.some((r) => r.name === p.name));
+    /** Excel 只重建醫務櫃檯、護理與固定兼職；藥師、醫檢師、非固定兼職與手動組別保留 */
+    const rebuilt = (p) => p.group === 'counter' || p.group === 'nurse' || (p.group === 'part' && p.fixed);
+    const keep = state.staff.filter((p) => !rebuilt(p) && !roles.some((r) => r.name === p.name));
     const staff = [];
     const counters = { F: 0, N: 0, P: 0 };
-    keepPart.forEach((p) => { const m = /^P(\d+)$/.exec(p.id); if (m) counters.P = Math.max(counters.P, Number(m[1])); });
+    keep.forEach((p) => { const m = /^P(\d+)$/.exec(p.id); if (m) counters.P = Math.max(counters.P, Number(m[1])); });
     const pidOf = {};
     roles.forEach((r) => {
       const group = r.role === 'fixedPT' ? 'part' : r.side;
@@ -275,18 +357,30 @@
       pidOf[r.name] = p.id;
       staff.push(p);
     });
-    state.staff = staff.concat(keepPart);
+    state.staff = staff.concat(keep);
 
     const dates = parsed.dates;
     state.dateDemand = state.dateDemand || {};
     state.locks = state.locks || {};
     state.requests = state.requests || {};
-    dates.forEach((d) => { state.dateDemand[d] = {}; delete state.locks[d]; delete state.requests[d]; });
+    const sheetSites = [...new Set(parsed.cells.map((x) => C.siteIdOf(siteShort(x.site))))];
+    sheetSites.forEach((site) => {
+      const dd = state.dateDemand[site] = state.dateDemand[site] || {};
+      dates.forEach((d) => { dd[d] = {}; });
+    });
+    /** 只清掉上次 Excel 帶入的預假；同仁在「希望休假」頁自行填的保留 */
+    dates.forEach((d) => {
+      delete state.locks[d];
+      const day = state.requests[d];
+      if (!day) return;
+      Object.keys(day).forEach((pid) => { if (day[pid].src === 'excel') delete day[pid]; });
+      if (!Object.keys(day).length) delete state.requests[d];
+    });
 
     const unmapped = [];
     const codeOf = (d, idx) => { const s = E.dayShifts(state, d)[idx]; return s ? s.code : null; };
-    const bump = (d, code, sid) => {
-      const day = state.dateDemand[d];
+    const bump = (site, d, code, sid) => {
+      const day = state.dateDemand[site][d];
       day[code] = day[code] || {};
       const q = day[code][sid] = day[code][sid] || { min: 0, max: 0 };
       q.min++; q.max++;
@@ -299,7 +393,7 @@
       let sid = x.station;
       if ((x.kind === 'pool' || x.kind === 'named') && x.side === 'counter') sid = 'counter';
       else if (x.kind !== 'support' && sid === 'counter') { sid = 'clinic'; stats.crossRole++; }
-      bump(x.date, code, sid);
+      bump(C.siteIdOf(siteShort(x.site)), x.date, code, sid);
       if (x.kind === 'pool') stats.pool[x.side]++;
       if (x.kind === 'support') stats.support++;
       if (x.kind === 'named') {
@@ -323,11 +417,11 @@
       if (fixedNames.has(t.name)) { leaveFixed.push(`${t.date} ${t.raw}`); return; }
       const pid = pidOf[t.name];
       const day = state.requests[t.date] = state.requests[t.date] || {};
-      if (t.off) day[pid] = { off: true, note: t.note || t.raw };
+      if (t.off) day[pid] = { off: true, note: t.note || t.raw, src: 'excel' };
       else {
         const code = codeOf(t.date, t.block);
         if (!code) return;
-        const r = day[pid] = day[pid] || { block: [] };
+        const r = day[pid] = day[pid] || { block: [], src: 'excel' };
         if (!r.off) { r.block = r.block || []; if (!r.block.includes(code)) r.block.push(code); r.note = (r.note ? r.note + '、' : '') + t.raw; }
       }
       leaveApplied.push(`${t.date} ${t.raw}`);
@@ -337,8 +431,14 @@
     const firstSun = dates.length ? E.addDays(dates[0], -E.dow(dates[0])) : null;
     if (firstSun && E.alignPeriod(set.periodAnchor || firstSun, firstSun) !== firstSun) set.periodAnchor = firstSun;
     const periods = [...new Set(dates.map((d) => E.alignPeriod(set.periodAnchor, d)))].sort();
-    periods.forEach((p) => { delete state.schedules[p]; });
+    periods.forEach((p) => {
+      const old = state.schedules[p];
+      delete state.schedules[p];
+      const manual = old ? state.staff.filter((x) => !E.isAutoGroup(x.group) && old[x.id]) : [];
+      if (manual.length) state.schedules[p] = Object.fromEntries(manual.map((x) => [x.id, old[x.id]]));
+    });
     if (periods.length) state.periodStart = periods[0];
+    const docs = applyDoctors(state, parsed, periods, codeOf);
 
     const summary = {
       file: opts.fileName || '',
@@ -348,6 +448,8 @@
       dates: [dates[0], dates[dates.length - 1]],
       poolSize: parsed.poolSize,
       roles: roles.map((r) => ({ name: r.name, side: r.side, role: r.role, title: r.title, site: r.site, sessions: r.sessions, id: pidOf[r.name] })),
+      doctors: docs.list,
+      doctorSessions: docs.sessions,
       demand: stats,
       external: parsed.external,
       leaveApplied: leaveApplied.length,
@@ -359,5 +461,5 @@
     return summary;
   }
 
-  return { parseRows, parseWorkbook, parseLeaveCell, applyToState, classify, stationOfLabel, buildAliases, resolve, ymdOf };
+  return { parseRows, parseWorkbook, parseLeaveCell, applyToState, classify, classifyDoctors, stationOfLabel, buildAliases, resolve, ymdOf };
 });

@@ -13,8 +13,9 @@
   // ---------- 個人統計 ----------
   function personMetrics(state, sched, start, p) {
     const dates = E.periodDates(start), late = E.lateThreshold(state);
+    const r2 = (x) => Math.round(x * 100) / 100;
     const m = {
-      id: p.id, name: p.name, group: p.group, fixed: !!p.fixed,
+      id: p.id, name: p.name, group: p.group, fixed: E.isFixedIn(state, p, start),
       hours: 0, workdays: 0, regular: 0, rest: 0, sessions: 0,
       adj: 0, gap: 0, single: 0, late: 0,
       byShift: {}, stations: {}, weekHours: [0, 0, 0, 0], weekSessions: [0, 0, 0, 0],
@@ -44,7 +45,8 @@
         m.stations[sid] = (m.stations[sid] || 0) + 1;
       });
     });
-    m.hours = Math.round(m.hours * 100) / 100;
+    m.hours = r2(m.hours);
+    m.weekHours = m.weekHours.map(r2);
     return m;
   }
 
@@ -57,6 +59,8 @@
     const restMin = set.minRestHours * 60;
     E.activeStaff(state).forEach((p) => {
       const isFT = p.group !== 'part';
+      if (E.isLaborExempt(p.group)) return;
+      if (!E.isAutoGroup(p.group) && !dates.some((d) => entryOf(sched, p.id, d))) return;
       const m = personMetrics(state, sched, start, p);
       if (m.hours > set.hoursCap + 1e-9) {
         out.push(issue('error', 'hours', p.id, null, `四週正常工時 ${m.hours}h，超過上限 ${set.hoursCap}h（§30-1）`));
@@ -76,7 +80,7 @@
           if (codes.length > (set.maxSessionsPerDay || 2)) out.push(issue('error', 'sessions', p.id, d, `一日排 ${codes.length} 節，超過 ${set.maxSessionsPerDay} 節`));
           if (E.overlaps(E.entryShiftMap(state, e, p.group), codes)) out.push(issue('error', 'overlap', p.id, d, '同日班別時間重疊'));
           const sp = E.entrySpan(state, e, p.group);
-          if (sp && sp.hours > set.maxDailyHours + 1e-9) out.push(issue('error', 'daily', p.id, d, `單日正常工時 ${sp.hours}h，超過 ${set.maxDailyHours}h（§30-1）`));
+          if (sp && sp.hours > set.maxDailyHours + 1e-9) out.push(issue('error', 'daily', p.id, d, `單日正常工時 ${Math.round(sp.hours * 100) / 100}h，超過 ${set.maxDailyHours}h（§30-1）`));
           const gap = E.gapBetween(prevSpan, sp);
           if (gap < restMin) {
             out.push(issue('error', 'rest', p.id, d, `與前一日下班間隔僅 ${(gap / 60).toFixed(1)}h，未達 ${set.minRestHours}h（§34）`));
@@ -130,11 +134,14 @@
   }
 
   // ---------- 覆蓋 ----------
+  function asView(state) { return state.siteId ? state : E.siteView(state, E.siteIds(state)[0]); }
+
   function coverage(state, sched, start) {
+    state = asView(state);
     const dates = E.periodDates(start);
     const cells = {}, gaps = [], overs = [];
     let totalShort = 0, totalNeed = 0;
-    const staff = E.activeStaff(state);
+    const staff = E.activeStaff(state).filter((p) => E.isAutoGroup(p.group));
     dates.forEach((d) => {
       E.dayShifts(state, d).forEach((s) => {
         const byStation = {};
@@ -165,6 +172,7 @@
 
   // ---------- 產能（最低需求 vs 可供給人力，以節為單位） ----------
   function capacity(state, start) {
+    state = asView(state);
     const set = state.settings, dates = E.periodDates(start);
     const workdays = dates.filter((d) => E.dayShifts(state, d).length).length;
     const autoOff = dates.filter((d) => E.dow(d) !== set.restDow && !E.dayShifts(state, d).length).length;
@@ -173,11 +181,12 @@
     const avgH = state.shifts.length ? state.shifts.reduce((h, s) => h + E.shiftHours(s), 0) / state.shifts.length : 4;
     const ftSessions = Math.min(ftDays * per, Math.floor(set.hoursCap / avgH));
 
-    const need = { counter: 0, nurse: 0 }, maxNeed = { counter: 0, nurse: 0 }, fixed = { counter: 0, nurse: 0 };
+    const need = {}, maxNeed = {}, fixed = {};
+    E.FT_GROUPS.forEach((g) => { need[g] = 0; maxNeed[g] = 0; fixed[g] = 0; });
     const active = new Set(E.activeStaff(state).map((p) => p.id));
     dates.forEach((d) => {
       E.dayShifts(state, d).forEach((s) => {
-        ['counter', 'nurse'].forEach((g) => {
+        E.FT_GROUPS.forEach((g) => {
           const q = E.groupDemand(state, g, s.code, d);
           need[g] += q.min;
           maxNeed[g] += q.max;
@@ -192,17 +201,17 @@
       });
     });
     const groups = {};
-    ['counter', 'nurse'].forEach((g) => {
-      const n = E.activeStaff(state, g).filter((p) => !p.fixed).length;
+    E.FT_GROUPS.forEach((g) => {
+      const n = E.activeStaff(state, g).filter((p) => !E.isFixedIn(state, p, start)).length;
       const rest = Math.max(0, need[g] - fixed[g]);
       groups[g] = {
         staff: n, fixedStaff: E.activeStaff(state, g).length - n, fixedSessions: fixed[g],
         supply: n * ftSessions, need: need[g], maxNeed: maxNeed[g], short: Math.max(0, rest - n * ftSessions),
       };
     });
-    const pts = E.activeStaff(state, 'part').filter((p) => !p.fixed);
+    const pts = E.activeStaff(state, 'part').filter((p) => !E.isFixedIn(state, p, start));
     const ptSupply = pts.reduce((s, p) => s + (Number(p.weeklySlots) || 0) * 4, 0);
-    const totalShort = groups.counter.short + groups.nurse.short;
+    const totalShort = E.FT_GROUPS.reduce((s, g) => s + groups[g].short, 0);
     return {
       ftDays, ftSessionsPerPerson: ftSessions, groups,
       part: { staff: pts.length, supply: ptSupply },
@@ -224,7 +233,7 @@
 
   function fairness(state, metrics) {
     const out = {};
-    ['counter', 'nurse', 'part'].forEach((g) => {
+    E.FT_GROUPS.concat(['part']).forEach((g) => {
       const ms = metrics.filter((m) => m.group === g && !m.fixed);
       if (!ms.length) return;
       const pick = (f) => ms.map(f);
@@ -255,7 +264,9 @@
     return out;
   }
 
+  /** 以單一院所為單位；傳入完整 state 時以第一個院所為準 */
   function analyze(state, sched, start) {
+    state = asView(state);
     const metrics = E.activeStaff(state).map((p) => personMetrics(state, sched, start, p));
     const issues = legalChecks(state, sched, start);
     const cov = coverage(state, sched, start);
@@ -263,7 +274,7 @@
     const fair = fairness(state, metrics);
     const errors = issues.filter((x) => x.level === 'error');
     const warns = issues.filter((x) => x.level === 'warn');
-    const ft = metrics.filter((m) => m.group !== 'part');
+    const ft = metrics.filter((m) => E.FT_GROUPS.includes(m.group));
     return {
       metrics, issues, coverage: cov, capacity: cap, fairness: fair,
       summary: {
@@ -278,5 +289,51 @@
     };
   }
 
-  return { personMetrics, legalChecks, coverage, capacity, fairness, analyze, score };
+  /** 各院所分別檢核，回傳 { [院所]: analyze 結果 }；沒有在職同仁的院所略過 */
+  function analyzeSites(state, sched, start) {
+    const out = {};
+    E.siteIds(state).forEach((id) => {
+      const v = E.siteView(state, id);
+      if (E.activeStaff(v).length) out[id] = analyze(v, sched, start);
+    });
+    return out;
+  }
+
+  // ---------- 預排希望達成 ----------
+  /** 單格：休假希望是否達成（true/false/null）、班別希望 exact／partial／miss／null */
+  function wishStatus(state, d, pid, entry) {
+    const codes = E.workCodes(entry);
+    const req = E.requestOf(state, d, pid);
+    const leave = req ? (req.off ? !codes.length : !codes.some((c) => (req.block || []).includes(c))) : null;
+    const want = E.wishCodes(state, d, pid);
+    let wish = null;
+    if (want.length) wish = E.sameCodes(codes, want) ? 'exact' : codes.some((c) => want.includes(c)) ? 'partial' : 'miss';
+    return { leave, wish };
+  }
+
+  /** 自動排班同仁的休假希望與班別希望達成情形；只列有提出希望者 */
+  function wishReport(state, sched, start) {
+    const dates = E.periodDates(start);
+    const rows = E.activeStaff(state).filter((p) => E.isAutoGroup(p.group)).map((p) => {
+      const r = { id: p.id, name: p.name, group: p.group, fixed: E.isFixedIn(state, p, start), leave: 0, leaveOk: 0, wish: 0, exact: 0, partial: 0, misses: [] };
+      dates.forEach((d) => {
+        const st = wishStatus(state, d, p.id, sched[p.id] && sched[p.id][d]);
+        if (st.leave !== null) {
+          r.leave++;
+          if (st.leave) r.leaveOk++; else r.misses.push({ date: d, type: 'leave' });
+        }
+        if (st.wish) {
+          r.wish++;
+          if (st.wish === 'exact') r.exact++;
+          else if (st.wish === 'partial') r.partial++;
+          else r.misses.push({ date: d, type: 'wish' });
+        }
+      });
+      return r;
+    }).filter((r) => r.leave || r.wish);
+    const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
+    return { rows, leave: sum('leave'), leaveOk: sum('leaveOk'), wish: sum('wish'), exact: sum('exact'), partial: sum('partial') };
+  }
+
+  return { personMetrics, legalChecks, coverage, capacity, fairness, analyze, analyzeSites, score, wishStatus, wishReport };
 });
